@@ -2,15 +2,20 @@
     "seed": 2023,
     "save_dir": "experiments_model/",
     "train_data_loader": {
-        "name": "youtube-vos",
-        "video_root": "your_video_root",
-        "flow_root": "your_flow_root",
+        "name": "custom_list",
+        "use_list": true,
+
+        "video_list": "../data_list/ScannetPP_imgs_train_mini.txt",
+        "mask_list": "../data_list/irregular_mask_40_50.txt",
+        "line_list": "../data_list/ScannetPP_pkls_train_mini.txt",
+        "flow_list": "/root/autodl-tmp/train_lists/flows.txt",
+
         "w": 432,
         "h": 240,
         "num_local_frames": 10,
         "num_ref_frames": 6,
         "load_flow": 0,
-        "line_root": "your_pkl_line_root",
+
         "line_width": 1,
         "line_swap_xy": true,
         "line_invert_y": true
