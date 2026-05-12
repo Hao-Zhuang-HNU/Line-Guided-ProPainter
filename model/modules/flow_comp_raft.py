@@ -16,7 +16,11 @@ def initialize_RAFT(model_path='weights/raft-things.pth', device='cuda'):
     args.mixed_precision = False
     args.alternate_corr = False
     model = torch.nn.DataParallel(RAFT(args))
-    model.load_state_dict(torch.load(args.raft_model, map_location='cpu'))
+    try:
+        raft_weights = torch.load(args.raft_model, map_location='cpu', weights_only=True)
+    except TypeError:
+        raft_weights = torch.load(args.raft_model, map_location='cpu')
+    model.load_state_dict(raft_weights)
     model = model.module
 
     model.to(device)
