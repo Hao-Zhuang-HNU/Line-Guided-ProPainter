@@ -122,14 +122,15 @@ def render_lines_to_pil(lines, size, line_width=1, swap_xy=True, invert_y=True):
 class TrainDataset(torch.utils.data.Dataset):
     def __init__(self, args: dict):
         self.args = args
-        self.video_root = args['video_root']
-        self.flow_root = args['flow_root']
+        self.video_root = args.get('video_root', None)
+        self.flow_root = args.get('flow_root', None)
         self.line_root = args.get('line_root', None)
 
         self.video_list = args.get('video_list', None)
         self.flow_list = args.get('flow_list', None)
         self.line_list = args.get('line_list', None)
         self.use_line = (self.line_root is not None and os.path.exists(self.line_root)) or (self.line_list is not None and os.path.exists(self.line_list))
+        self.use_list = args.get('use_list', False)
         self.line_width = args.get('line_width', 1)
         self.line_swap_xy = args.get('line_swap_xy', True)
         self.line_invert_y = args.get('line_invert_y', True)
@@ -139,29 +140,39 @@ class TrainDataset(torch.utils.data.Dataset):
 
         self.load_flow = args['load_flow']
         if self.load_flow:
-            assert os.path.exists(self.flow_root) or (self.flow_list is not None and os.path.exists(self.flow_list))
+            assert (self.flow_root is not None and os.path.exists(self.flow_root)) or (self.flow_list is not None and os.path.exists(self.flow_list))
 
         self.video_index = _build_video_file_index(self.video_list) if self.video_list else None
         self.flow_index = _build_video_file_index(self.flow_list) if self.flow_list else None
         self.line_index = _build_video_file_index(self.line_list) if self.line_list else None
-        
-        json_path = os.path.join('./datasets', args['name'], 'train.json')
 
-        with open(json_path, 'r') as f:
-            self.video_train_dict = json.load(f)
-        self.video_names = sorted(list(self.video_train_dict.keys()))
-
-        # self.video_names = sorted(os.listdir(self.video_root))
         self.video_dict = {}
         self.frame_dict = {}
 
-        for v in self.video_names:
-            frame_list = sorted(os.listdir(os.path.join(self.video_root, v)))
-            v_len = len(frame_list)
-            if v_len > self.num_local_frames + self.num_ref_frames:
-                self.video_dict[v] = v_len
-                self.frame_dict[v] = frame_list
-                
+        if self.use_list and self.video_index is not None:
+            for (video_name, frame_name), _ in self.video_index.items():
+                self.frame_dict.setdefault(video_name, []).append(frame_name)
+            for video_name in list(self.frame_dict.keys()):
+                self.frame_dict[video_name] = sorted(self.frame_dict[video_name])
+                v_len = len(self.frame_dict[video_name])
+                if v_len > self.num_local_frames + self.num_ref_frames:
+                    self.video_dict[video_name] = v_len
+                else:
+                    self.frame_dict.pop(video_name, None)
+        else:
+            if self.video_root is None:
+                raise KeyError('video_root')
+            json_path = os.path.join('./datasets', args['name'], 'train.json')
+            with open(json_path, 'r') as f:
+                self.video_train_dict = json.load(f)
+            video_names = sorted(list(self.video_train_dict.keys()))
+
+            for v in video_names:
+                frame_list = sorted(os.listdir(os.path.join(self.video_root, v)))
+                v_len = len(frame_list)
+                if v_len > self.num_local_frames + self.num_ref_frames:
+                    self.video_dict[v] = v_len
+                    self.frame_dict[v] = frame_list
 
         self.video_names = list(self.video_dict.keys()) # update names
 
@@ -201,7 +212,11 @@ class TrainDataset(torch.utils.data.Dataset):
         flows_f, flows_b = [], []
         for idx in selected_index:
             frame_list = self.frame_dict[video_name]
-            img_path = self.video_index.get((video_name, frame_list[idx]), os.path.join(self.video_root, video_name, frame_list[idx])) if self.video_index else os.path.join(self.video_root, video_name, frame_list[idx])
+            img_path = self.video_index.get((video_name, frame_list[idx])) if self.video_index else None
+            if img_path is None:
+                if self.video_root is None:
+                    raise FileNotFoundError(f'Missing frame path for {video_name}/{frame_list[idx]}')
+                img_path = os.path.join(self.video_root, video_name, frame_list[idx])
             img_bytes = self.file_client.get(img_path, 'img')
             img = imfrombytes(img_bytes, float32=False)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -213,8 +228,10 @@ class TrainDataset(torch.utils.data.Dataset):
 
             if self.use_line:
                 line_stem = os.path.splitext(frame_list[idx])[0] + '.pkl'
-                line_path = self.line_index.get((video_name, line_stem), os.path.join(self.line_root, video_name, line_stem)) if self.line_index else os.path.join(self.line_root, video_name, line_stem)
-                if os.path.exists(line_path):
+                line_path = self.line_index.get((video_name, line_stem)) if self.line_index else None
+                if line_path is None and self.line_root is not None:
+                    line_path = os.path.join(self.line_root, video_name, line_stem)
+                if line_path is not None and os.path.exists(line_path):
                     line_segments = load_lines_from_pkl(line_path)
                 else:
                     line_segments = []
@@ -233,8 +250,13 @@ class TrainDataset(torch.utils.data.Dataset):
                 next_n = frame_list[idx+1][:-4]
                 flow_f_name = f'{current_n}_{next_n}_f.flo'
                 flow_b_name = f'{next_n}_{current_n}_b.flo'
-                flow_f_path = self.flow_index.get((video_name, flow_f_name), os.path.join(self.flow_root, video_name, flow_f_name)) if self.flow_index else os.path.join(self.flow_root, video_name, flow_f_name)
-                flow_b_path = self.flow_index.get((video_name, flow_b_name), os.path.join(self.flow_root, video_name, flow_b_name)) if self.flow_index else os.path.join(self.flow_root, video_name, flow_b_name)
+                flow_f_path = self.flow_index.get((video_name, flow_f_name)) if self.flow_index else None
+                flow_b_path = self.flow_index.get((video_name, flow_b_name)) if self.flow_index else None
+                if flow_f_path is None or flow_b_path is None:
+                    if self.flow_root is None:
+                        raise FileNotFoundError(f'Missing flow path for {video_name}: {flow_f_name} or {flow_b_name}')
+                    flow_f_path = os.path.join(self.flow_root, video_name, flow_f_name)
+                    flow_b_path = os.path.join(self.flow_root, video_name, flow_b_name)
                 flow_f = flowread(flow_f_path, quantize=False)
                 flow_b = flowread(flow_b_path, quantize=False)
                 flow_f = resize_flow(flow_f, self.h, self.w)
@@ -301,7 +323,7 @@ class TestDataset(torch.utils.data.Dataset):
 
         self.load_flow = args['load_flow']
         if self.load_flow:
-            assert os.path.exists(self.flow_root) or (self.flow_list is not None and os.path.exists(self.flow_list))
+            assert (self.flow_root is not None and os.path.exists(self.flow_root)) or (self.flow_list is not None and os.path.exists(self.flow_list))
 
         self.video_index = _build_video_file_index(self.video_list) if self.video_list else None
         self.mask_index = _build_video_file_index(self.mask_list) if self.mask_list else None
@@ -365,8 +387,13 @@ class TestDataset(torch.utils.data.Dataset):
                 next_n = frame_list[idx+1][:-4]
                 flow_f_name = f'{current_n}_{next_n}_f.flo'
                 flow_b_name = f'{next_n}_{current_n}_b.flo'
-                flow_f_path = self.flow_index.get((video_name, flow_f_name), os.path.join(self.flow_root, video_name, flow_f_name)) if self.flow_index else os.path.join(self.flow_root, video_name, flow_f_name)
-                flow_b_path = self.flow_index.get((video_name, flow_b_name), os.path.join(self.flow_root, video_name, flow_b_name)) if self.flow_index else os.path.join(self.flow_root, video_name, flow_b_name)
+                flow_f_path = self.flow_index.get((video_name, flow_f_name)) if self.flow_index else None
+                flow_b_path = self.flow_index.get((video_name, flow_b_name)) if self.flow_index else None
+                if flow_f_path is None or flow_b_path is None:
+                    if self.flow_root is None:
+                        raise FileNotFoundError(f'Missing flow path for {video_name}: {flow_f_name} or {flow_b_name}')
+                    flow_f_path = os.path.join(self.flow_root, video_name, flow_f_name)
+                    flow_b_path = os.path.join(self.flow_root, video_name, flow_b_name)
                 flow_f = flowread(flow_f_path, quantize=False)
                 flow_b = flowread(flow_b_path, quantize=False)
                 flow_f = resize_flow(flow_f, self.h, self.w)
