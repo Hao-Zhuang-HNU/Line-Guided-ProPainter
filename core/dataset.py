@@ -61,6 +61,25 @@ def load_lines_from_pkl(pkl_path):
     return cleaned
 
 
+
+
+def _load_abs_path_list(list_path):
+    with open(list_path, 'r') as f:
+        return [ln.strip() for ln in f if ln.strip()]
+
+
+def _build_video_file_index(list_path):
+    index = {}
+    for abs_path in _load_abs_path_list(list_path):
+        norm_path = os.path.normpath(abs_path)
+        parts = norm_path.split(os.sep)
+        if len(parts) < 2:
+            continue
+        video_name = parts[-2]
+        file_name = parts[-1]
+        index[(video_name, file_name)] = norm_path
+    return index
+
 def render_lines_to_pil(lines, size, line_width=1, swap_xy=True, invert_y=True):
     """Render pkl wireframe to a black-background, white-line PIL L image.
 
@@ -106,7 +125,11 @@ class TrainDataset(torch.utils.data.Dataset):
         self.video_root = args['video_root']
         self.flow_root = args['flow_root']
         self.line_root = args.get('line_root', None)
-        self.use_line = self.line_root is not None and os.path.exists(self.line_root)
+
+        self.video_list = args.get('video_list', None)
+        self.flow_list = args.get('flow_list', None)
+        self.line_list = args.get('line_list', None)
+        self.use_line = (self.line_root is not None and os.path.exists(self.line_root)) or (self.line_list is not None and os.path.exists(self.line_list))
         self.line_width = args.get('line_width', 1)
         self.line_swap_xy = args.get('line_swap_xy', True)
         self.line_invert_y = args.get('line_invert_y', True)
@@ -116,7 +139,11 @@ class TrainDataset(torch.utils.data.Dataset):
 
         self.load_flow = args['load_flow']
         if self.load_flow:
-            assert os.path.exists(self.flow_root)
+            assert os.path.exists(self.flow_root) or (self.flow_list is not None and os.path.exists(self.flow_list))
+
+        self.video_index = _build_video_file_index(self.video_list) if self.video_list else None
+        self.flow_index = _build_video_file_index(self.flow_list) if self.flow_list else None
+        self.line_index = _build_video_file_index(self.line_list) if self.line_list else None
         
         json_path = os.path.join('./datasets', args['name'], 'train.json')
 
@@ -174,7 +201,7 @@ class TrainDataset(torch.utils.data.Dataset):
         flows_f, flows_b = [], []
         for idx in selected_index:
             frame_list = self.frame_dict[video_name]
-            img_path = os.path.join(self.video_root, video_name, frame_list[idx])
+            img_path = self.video_index.get((video_name, frame_list[idx]), os.path.join(self.video_root, video_name, frame_list[idx])) if self.video_index else os.path.join(self.video_root, video_name, frame_list[idx])
             img_bytes = self.file_client.get(img_path, 'img')
             img = imfrombytes(img_bytes, float32=False)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -186,7 +213,7 @@ class TrainDataset(torch.utils.data.Dataset):
 
             if self.use_line:
                 line_stem = os.path.splitext(frame_list[idx])[0] + '.pkl'
-                line_path = os.path.join(self.line_root, video_name, line_stem)
+                line_path = self.line_index.get((video_name, line_stem), os.path.join(self.line_root, video_name, line_stem)) if self.line_index else os.path.join(self.line_root, video_name, line_stem)
                 if os.path.exists(line_path):
                     line_segments = load_lines_from_pkl(line_path)
                 else:
@@ -204,8 +231,10 @@ class TrainDataset(torch.utils.data.Dataset):
             if len(frames) <= self.num_local_frames-1 and self.load_flow:
                 current_n = frame_list[idx][:-4]
                 next_n = frame_list[idx+1][:-4]
-                flow_f_path = os.path.join(self.flow_root, video_name, f'{current_n}_{next_n}_f.flo')
-                flow_b_path = os.path.join(self.flow_root, video_name, f'{next_n}_{current_n}_b.flo')
+                flow_f_name = f'{current_n}_{next_n}_f.flo'
+                flow_b_name = f'{next_n}_{current_n}_b.flo'
+                flow_f_path = self.flow_index.get((video_name, flow_f_name), os.path.join(self.flow_root, video_name, flow_f_name)) if self.flow_index else os.path.join(self.flow_root, video_name, flow_f_name)
+                flow_b_path = self.flow_index.get((video_name, flow_b_name), os.path.join(self.flow_root, video_name, flow_b_name)) if self.flow_index else os.path.join(self.flow_root, video_name, flow_b_name)
                 flow_f = flowread(flow_f_path, quantize=False)
                 flow_b = flowread(flow_b_path, quantize=False)
                 flow_f = resize_flow(flow_f, self.h, self.w)
@@ -266,9 +295,17 @@ class TestDataset(torch.utils.data.Dataset):
         self.mask_root = args['mask_root']
         self.flow_root = args['flow_root']
 
+        self.video_list = args.get('video_list', None)
+        self.mask_list = args.get('mask_list', None)
+        self.flow_list = args.get('flow_list', None)
+
         self.load_flow = args['load_flow']
         if self.load_flow:
-            assert os.path.exists(self.flow_root)
+            assert os.path.exists(self.flow_root) or (self.flow_list is not None and os.path.exists(self.flow_list))
+
+        self.video_index = _build_video_file_index(self.video_list) if self.video_list else None
+        self.mask_index = _build_video_file_index(self.mask_list) if self.mask_list else None
+        self.flow_index = _build_video_file_index(self.flow_list) if self.flow_list else None
         self.video_names = sorted(os.listdir(self.mask_root))
 
         self.video_dict = {}
@@ -299,7 +336,7 @@ class TestDataset(torch.utils.data.Dataset):
         flows_f, flows_b = [], []
         for idx in selected_index:
             frame_list = self.frame_dict[video_name]
-            frame_path = os.path.join(self.video_root, video_name, frame_list[idx])
+            frame_path = self.video_index.get((video_name, frame_list[idx]), os.path.join(self.video_root, video_name, frame_list[idx])) if self.video_index else os.path.join(self.video_root, video_name, frame_list[idx])
 
             img_bytes = self.file_client.get(frame_path, 'input')
             img = imfrombytes(img_bytes, float32=False)
@@ -309,7 +346,8 @@ class TestDataset(torch.utils.data.Dataset):
 
             frames.append(img)
 
-            mask_path = os.path.join(self.mask_root, video_name, str(idx).zfill(5) + '.png')
+            mask_name = str(idx).zfill(5) + '.png'
+            mask_path = self.mask_index.get((video_name, mask_name), os.path.join(self.mask_root, video_name, mask_name)) if self.mask_index else os.path.join(self.mask_root, video_name, mask_name)
             mask = Image.open(mask_path).resize(self.size, Image.NEAREST).convert('L')
 
             # origin: 0 indicates missing. now: 1 indicates missing
@@ -325,8 +363,10 @@ class TestDataset(torch.utils.data.Dataset):
             if len(frames) <= len(selected_index)-1 and self.load_flow:
                 current_n = frame_list[idx][:-4]
                 next_n = frame_list[idx+1][:-4]
-                flow_f_path = os.path.join(self.flow_root, video_name, f'{current_n}_{next_n}_f.flo')
-                flow_b_path = os.path.join(self.flow_root, video_name, f'{next_n}_{current_n}_b.flo')
+                flow_f_name = f'{current_n}_{next_n}_f.flo'
+                flow_b_name = f'{next_n}_{current_n}_b.flo'
+                flow_f_path = self.flow_index.get((video_name, flow_f_name), os.path.join(self.flow_root, video_name, flow_f_name)) if self.flow_index else os.path.join(self.flow_root, video_name, flow_f_name)
+                flow_b_path = self.flow_index.get((video_name, flow_b_name), os.path.join(self.flow_root, video_name, flow_b_name)) if self.flow_index else os.path.join(self.flow_root, video_name, flow_b_name)
                 flow_f = flowread(flow_f_path, quantize=False)
                 flow_b = flowread(flow_b_path, quantize=False)
                 flow_f = resize_flow(flow_f, self.h, self.w)
