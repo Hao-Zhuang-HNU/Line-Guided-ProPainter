@@ -1,2 +1,12 @@
 ##大文件
 data_list/
+
+
+##编译器文件
+RAFT/__pycache__/
+RAFT/utils/__pycache__/
+core/__pycache__/
+model/__pycache__/
+model/canny/__pycache__/
+model/modules/__pycache__/
+utils/__pycache__/
