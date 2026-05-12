@@ -33,6 +33,8 @@ class Trainer:
 
         # setup data set and data loader
         self.train_dataset = TrainDataset(config['train_data_loader'])
+        if len(self.train_dataset) == 0:
+            raise RuntimeError('TrainDataset has 0 valid videos. Please verify video_list/video_root and frame counts.')
         self.use_line_guidance = getattr(self.train_dataset, 'use_line', False)
 
         self.train_sampler = None
