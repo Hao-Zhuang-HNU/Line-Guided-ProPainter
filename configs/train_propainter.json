@@ -4,18 +4,15 @@
     "train_data_loader": {
         "name": "custom_list",
         "use_list": true,
-
         "video_list": "../data_list/ScannetPP_imgs_train_mini.txt",
         "mask_list": "../data_list/irregular_mask_40_50.txt",
         "line_list": "../data_list/ScannetPP_pkls_train_mini.txt",
         "flow_list": "/root/autodl-tmp/train_lists/flows.txt",
-
         "w": 432,
         "h": 240,
         "num_local_frames": 10,
         "num_ref_frames": 6,
         "load_flow": 0,
-
         "line_width": 1,
         "line_swap_xy": true,
         "line_invert_y": true
@@ -44,9 +41,9 @@
         "beta1": 0,
         "beta2": 0.99,
         "lr": 0.0001,
-        "batch_size": 8,
-        "num_workers": 8,
-        "num_prefetch_queue": 8,
+        "batch_size": 2,
+        "num_workers": 0,
+        "num_prefetch_queue": 1,
         "log_freq": 100,
         "save_freq": 10000.0,
         "iterations": 700000.0,
