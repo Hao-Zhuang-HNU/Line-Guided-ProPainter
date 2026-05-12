@@ -1,6 +1,7 @@
 ##大文件
 data_list/
 weights/
+experiments_model/
 
 ##编译器文件
 RAFT/__pycache__/
