@@ -5,6 +5,9 @@ DL3DV_testlist/
 weights/
 experiments_model/
 
+##数据
+results/
+
 ##编译器文件
 RAFT/__pycache__/
 RAFT/utils/__pycache__/
