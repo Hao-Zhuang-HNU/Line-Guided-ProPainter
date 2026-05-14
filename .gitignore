@@ -12,6 +12,7 @@ results/
 
 ##编译器文件
 .ipynb_checkpoints/
+__pycache__/
 RAFT/__pycache__/
 RAFT/utils/__pycache__/
 core/__pycache__/
