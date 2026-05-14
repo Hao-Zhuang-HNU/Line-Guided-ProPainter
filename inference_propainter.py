@@ -117,31 +117,69 @@ def read_mask(mpath, length, size, flow_mask_dilates=8, mask_dilates=5):
     return flow_masks, masks_dilated
 
 
-def read_line_pkl(line_path, length, size, line_width=1, line_swap_xy=True, line_invert_y=True):
-    """Read frame-wise pkl wireframes and render them as PIL L maps.
+def _collect_framewise_files(path, exts, length):
+    """Collect sorted frame-wise files from a path.
 
-    line_path can be a directory containing *.pkl files, or a single pkl file
-    that will be repeated for all frames. Missing files become empty line maps.
+    If `path` is a file, repeat it for all frames. If it is a directory,
+    collect sorted files with allowed extensions.
+    """
+    if os.path.isfile(path):
+        return [path] * length
+
+    if not os.path.isdir(path):
+        raise FileNotFoundError(f'Line guidance path not found: {path}')
+
+    names = sorted([n for n in os.listdir(path) if os.path.splitext(n)[1].lower() in exts])
+    if len(names) > length:
+        names = names[:length]
+    return [os.path.join(path, n) for n in names]
+
+
+def read_line_guidance(line_path, length, size, line_width=1, line_swap_xy=True, line_invert_y=True):
+    """Read frame-wise line guidance maps.
+
+    Supports:
+    - pkl wireframes (*.pkl): rendered to line maps with swap/invert controls;
+    - image wireframes (*.png/*.jpg/*.jpeg): used directly (no coordinate transform).
+    Missing frames are padded with empty maps.
     """
     if line_path is None:
         return None
 
     line_imgs = []
-    if line_path.endswith('.pkl'):
-        pkl_files = [line_path] * length
+    path_ext = os.path.splitext(line_path)[1].lower()
+    if path_ext == '.pkl':
+        line_files = _collect_framewise_files(line_path, {'.pkl'}, length)
+        mode = 'pkl'
+    elif path_ext in {'.png', '.jpg', '.jpeg'}:
+        line_files = _collect_framewise_files(line_path, {'.png', '.jpg', '.jpeg'}, length)
+        mode = 'image'
     else:
-        names = sorted([n for n in os.listdir(line_path) if n.endswith('.pkl')])
-        if len(names) > length:
-            names = names[:length]
-        pkl_files = [os.path.join(line_path, n) for n in names]
+        # directory: auto detect pkl/image format by contained files
+        if not os.path.isdir(line_path):
+            raise ValueError(f'Unsupported line guidance path: {line_path}')
+        pkl_files = _collect_framewise_files(line_path, {'.pkl'}, length)
+        img_files = _collect_framewise_files(line_path, {'.png', '.jpg', '.jpeg'}, length)
+        if len(pkl_files) > 0:
+            line_files, mode = pkl_files, 'pkl'
+        elif len(img_files) > 0:
+            line_files, mode = img_files, 'image'
+        else:
+            line_files, mode = [], 'image'
 
     for i in range(length):
-        if i < len(pkl_files) and os.path.exists(pkl_files[i]):
-            lines = load_lines_from_pkl(pkl_files[i])
+        if i < len(line_files) and os.path.exists(line_files[i]):
+            if mode == 'pkl':
+                lines = load_lines_from_pkl(line_files[i])
+                line_img = render_lines_to_pil(lines, size, line_width=line_width,
+                                               swap_xy=line_swap_xy, invert_y=line_invert_y)
+            else:
+                line_img = Image.open(line_files[i]).convert('L')
+                if line_img.size != size:
+                    line_img = line_img.resize(size, Image.BILINEAR)
         else:
-            lines = []
-        line_imgs.append(render_lines_to_pil(lines, size, line_width=line_width,
-                                             swap_xy=line_swap_xy, invert_y=line_invert_y))
+            line_img = Image.fromarray(np.zeros((size[1], size[0]), dtype=np.uint8), mode='L')
+        line_imgs.append(line_img)
 
     if len(line_imgs) == 1:
         line_imgs = line_imgs * length
@@ -221,13 +259,13 @@ if __name__ == '__main__':
     parser.add_argument(
         '-m', '--mask', type=str, default='inputs/object_removal/bmx-trees_mask', help='Path of the mask(s) or mask folder.')
     parser.add_argument(
-        '--line', type=str, default=None, help='Optional path of frame-wise pkl line maps. Directory should contain sorted *.pkl files.')
+        '--line', type=str, default=None, help='Optional path of frame-wise line maps (*.pkl or *.png/*.jpg/*.jpeg).')
     parser.add_argument(
-        '--line_width', type=int, default=1, help='Rendered pkl wireframe thickness in pixels. Default: 1')
+        '--line_width', type=int, default=1, help='Rendered pkl wireframe thickness in pixels. Ignored for image line maps. Default: 1')
     parser.add_argument(
-        '--line_no_swap_xy', action='store_true', help='Disable x/y swap when rendering pkl lines. Default follows visualize_pkl.py convention.')
+        '--line_no_swap_xy', action='store_true', help='Disable x/y swap when rendering pkl lines. Ignored for image line maps.')
     parser.add_argument(
-        '--line_no_invert_y', action='store_true', help='Disable image-coordinate y-axis convention when rendering pkl lines.')
+        '--line_no_invert_y', action='store_true', help='Disable image-coordinate y-axis convention when rendering pkl lines. Ignored for image line maps.')
     parser.add_argument(
         '-o', '--output', type=str, default='results', help='Output folder. Default: results')
     parser.add_argument(
@@ -289,7 +327,7 @@ if __name__ == '__main__':
         flow_masks, masks_dilated = read_mask(args.mask, frames_len, size, 
                                               flow_mask_dilates=args.mask_dilation,
                                               mask_dilates=args.mask_dilation)
-        line_imgs = read_line_pkl(args.line, frames_len, size,
+        line_imgs = read_line_guidance(args.line, frames_len, size,
                                   line_width=args.line_width,
                                   line_swap_xy=not args.line_no_swap_xy,
                                   line_invert_y=not args.line_no_invert_y)
