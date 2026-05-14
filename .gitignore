@@ -5,11 +5,13 @@ DL3DV_testlist/
 weights/
 experiments_model/
 eval/
+logs/
 
 ##数据
 results/
 
 ##编译器文件
+.ipynb_checkpoints/
 RAFT/__pycache__/
 RAFT/utils/__pycache__/
 core/__pycache__/
