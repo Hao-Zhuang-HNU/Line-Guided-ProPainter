@@ -1,0 +1,17 @@
+{
+  "count_frames": 159,
+  "enabled_metrics": [
+    "PSNR_all",
+    "PSNR_hole",
+    "LPIPS",
+    "VFID_proxy",
+    "Ewarp_all"
+  ],
+  "PSNR_all": 35.3650350113501,
+  "PSNR_hole": 31.268827198464706,
+  "LPIPS": 0.049438158917070936,
+  "VFID_proxy": 4.197148437149977,
+  "VFID_backbone": "r3d_18",
+  "flow_source": "gt",
+  "Ewarp_all": 0.013626728083642164
+}

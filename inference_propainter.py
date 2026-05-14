@@ -231,6 +231,11 @@ if __name__ == '__main__':
     parser.add_argument(
         '-o', '--output', type=str, default='results', help='Output folder. Default: results')
     parser.add_argument(
+        '--ckpt_path',
+        type=str,
+        default=None,
+        help='Path to ProPainter/InpaintGenerator checkpoint, e.g. experiments_model/.../gen_010000.pth. If None, use official ProPainter.pth.')
+    parser.add_argument(
         "--resize_ratio", type=float, default=1.0, help='Resize scale for processing video.')
     parser.add_argument(
         '--height', type=int, default=-1, help='Height of the processing video.')
@@ -339,8 +344,15 @@ if __name__ == '__main__':
     ##############################################
     # set up ProPainter model
     ##############################################
-    ckpt_path = load_file_from_url(url=os.path.join(pretrain_model_url, 'ProPainter.pth'), 
-                                    model_dir='weights', progress=True, file_name=None)
+    if args.ckpt_path is None:
+        ckpt_path = load_file_from_url(url=os.path.join(pretrain_model_url, 'ProPainter.pth'), 
+                                        model_dir='weights', progress=True, file_name=None)
+    else:
+        ckpt_path = args.ckpt_path
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f'Checkpoint not found: {ckpt_path}')
+
+    print(f"[INFO] Loading inpainting checkpoint: {ckpt_path}")
     model = InpaintGenerator(model_path=ckpt_path).to(device)
     model.eval()
 

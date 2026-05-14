@@ -3,6 +3,9 @@ import sys
 import json
 import random
 import pickle
+import re
+import glob
+from pathlib import Path
 
 import cv2
 from PIL import Image
@@ -63,22 +66,139 @@ def load_lines_from_pkl(pkl_path):
 
 
 
+def _resolve_existing_path(path_like):
+    """Resolve config paths robustly.
+
+    The json is often edited with paths relative to the project root. When the
+    script is launched from another cwd, this helper also tries the repository
+    root and its parent.
+    """
+    if not path_like:
+        return path_like
+    p = Path(str(path_like)).expanduser()
+    if p.exists():
+        return str(p)
+    repo_root = Path(__file__).resolve().parents[1]
+    for cand in [repo_root / p, repo_root.parent / p]:
+        if cand.exists():
+            return str(cand)
+    return str(path_like)
+
+
 def _load_abs_path_list(list_path):
+    list_path = _resolve_existing_path(list_path)
     with open(list_path, 'r') as f:
         return [ln.strip() for ln in f if ln.strip()]
 
 
+def _natural_key(path):
+    """Natural sort key: DSC2.JPG < DSC10.JPG."""
+    base = os.path.basename(os.path.normpath(path))
+    return [int(x) if x.isdigit() else x.lower() for x in re.split(r'(\d+)', base)]
+
+
+def _looks_like_scannetpp_scene(part):
+    # Examples: 0a5c013435_part1, f1e01af60a, 8b5caf3398_part2
+    return bool(re.match(r'^[0-9a-fA-F]{8,}(_part\d+)?$', str(part)))
+
+
+def _infer_video_name_and_file(norm_path):
+    """Infer sequence name and frame filename from absolute frame/pkl path.
+
+    Supported examples:
+      /.../seq/000001.png
+      /.../seq/images/000001.png
+      /.../seq/dslr/resized_undistorted_images/DSC01752.JPG
+      /.../ScannetPP/S_train/S_imgs/0a5c013435_part1/dslr/resized_undistorted_images/DSC01752.JPG
+
+    For ScanNet++ style paths the sequence id is the scene folder, not the
+    direct parent `resized_undistorted_images`.
+    """
+    parts = os.path.normpath(norm_path).split(os.sep)
+    file_name = parts[-1]
+
+    # Most robust for your ScanNet++ lists: pick scene-like folder anywhere.
+    for part in parts:
+        if _looks_like_scannetpp_scene(part):
+            return part, file_name
+
+    # Dataset marker folders: S_imgs/<scene>/..., S_pkls/<scene>/..., etc.
+    marker_dirs = {'S_imgs', 'S_images', 'S_frames', 'S_pkls', 'S_lines', 'S_line', 'S_masks'}
+    for i, part in enumerate(parts[:-1]):
+        if part in marker_dirs and i + 1 < len(parts) - 1:
+            return parts[i + 1], file_name
+
+    # ScanNet++ common format: <scene>/dslr/resized_undistorted_images/xxx.JPG
+    if 'dslr' in parts:
+        # use the last occurrence just in case the path contains another dslr-like segment
+        i = len(parts) - 1 - parts[::-1].index('dslr')
+        if i >= 1:
+            return parts[i - 1], file_name
+
+    media_dirs = {
+        'images', 'image', 'imgs', 'img', 'frames', 'frame',
+        'resized_undistorted_images', 'undistorted_images',
+        'line', 'lines', 'pkls', 'pkl', 'wireframe', 'wireframes',
+        'masks', 'mask'
+    }
+    if len(parts) >= 3 and parts[-2] in media_dirs:
+        return parts[-3], file_name
+
+    return parts[-2], file_name
+
+
 def _build_video_file_index(list_path):
+    """Build {(video_name, file_name): abs_path} and preserve natural frame order."""
     index = {}
     for abs_path in _load_abs_path_list(list_path):
         norm_path = os.path.normpath(abs_path)
         parts = norm_path.split(os.sep)
         if len(parts) < 2:
             continue
-        video_name = parts[-2]
-        file_name = parts[-1]
+        video_name, file_name = _infer_video_name_and_file(norm_path)
         index[(video_name, file_name)] = norm_path
     return index
+
+
+def _build_video_stem_index(list_path):
+    """Build {(video_name, stem): abs_path}; used for image-stem -> pkl matching."""
+    index = {}
+    for abs_path in _load_abs_path_list(list_path):
+        norm_path = os.path.normpath(abs_path)
+        parts = norm_path.split(os.sep)
+        if len(parts) < 2:
+            continue
+        video_name, file_name = _infer_video_name_and_file(norm_path)
+        stem = os.path.splitext(file_name)[0]
+        index[(video_name, stem)] = norm_path
+    return index
+
+
+def _load_mask_path_list(mask_list):
+    """Load irregular masks in natural order.
+
+    Supports either:
+      1) a txt file, each line is an absolute mask path;
+      2) a directory, recursively collecting png/jpg/jpeg masks.
+    """
+    if not mask_list:
+        return []
+    mask_list = _resolve_existing_path(mask_list)
+    if os.path.isdir(mask_list):
+        exts = ['*.png', '*.jpg', '*.jpeg', '*.JPG', '*.JPEG', '*.PNG']
+        paths = []
+        for ext in exts:
+            paths.extend(glob.glob(os.path.join(mask_list, '**', ext), recursive=True))
+        return sorted([os.path.normpath(p) for p in paths], key=_natural_key)
+    if not os.path.exists(mask_list):
+        print(f'[WARN][TrainDataset] mask_list not found: {mask_list}. Fallback to random masks.', flush=True)
+        return []
+    paths = [os.path.normpath(p) for p in _load_abs_path_list(mask_list)]
+    paths = [p for p in paths if os.path.exists(p)]
+    if len(paths) == 0:
+        print(f'[WARN][TrainDataset] mask_list is empty or paths do not exist: {mask_list}. Fallback to random masks.', flush=True)
+    return sorted(paths, key=_natural_key)
+
 
 def render_lines_to_pil(lines, size, line_width=1, swap_xy=True, invert_y=True):
     """Render pkl wireframe to a black-background, white-line PIL L image.
@@ -129,6 +249,8 @@ class TrainDataset(torch.utils.data.Dataset):
         self.video_list = args.get('video_list', None)
         self.flow_list = args.get('flow_list', None)
         self.line_list = args.get('line_list', None)
+        self.mask_list = args.get('mask_list', None)
+        self.mask_match_mode = args.get('mask_match_mode', 'frame_index')
         self.use_line = (self.line_root is not None and os.path.exists(self.line_root)) or (self.line_list is not None and os.path.exists(self.line_list))
         self.use_list = args.get('use_list', False)
         self.line_width = args.get('line_width', 1)
@@ -145,6 +267,9 @@ class TrainDataset(torch.utils.data.Dataset):
         self.video_index = _build_video_file_index(self.video_list) if self.video_list else None
         self.flow_index = _build_video_file_index(self.flow_list) if self.flow_list else None
         self.line_index = _build_video_file_index(self.line_list) if self.line_list else None
+        self.line_stem_index = _build_video_stem_index(self.line_list) if self.line_list else None
+        self.mask_paths = _load_mask_path_list(self.mask_list)
+        self.use_mask_list = len(self.mask_paths) > 0
 
         self.video_dict = {}
         self.frame_dict = {}
@@ -153,7 +278,7 @@ class TrainDataset(torch.utils.data.Dataset):
             for (video_name, frame_name), _ in self.video_index.items():
                 self.frame_dict.setdefault(video_name, []).append(frame_name)
             for video_name in list(self.frame_dict.keys()):
-                self.frame_dict[video_name] = sorted(self.frame_dict[video_name])
+                self.frame_dict[video_name] = sorted(self.frame_dict[video_name], key=_natural_key)
                 v_len = len(self.frame_dict[video_name])
                 if v_len > self.num_local_frames + self.num_ref_frames:
                     self.video_dict[video_name] = v_len
@@ -168,7 +293,7 @@ class TrainDataset(torch.utils.data.Dataset):
             video_names = sorted(list(self.video_train_dict.keys()))
 
             for v in video_names:
-                frame_list = sorted(os.listdir(os.path.join(self.video_root, v)))
+                frame_list = sorted(os.listdir(os.path.join(self.video_root, v)), key=_natural_key)
                 v_len = len(frame_list)
                 if v_len > self.num_local_frames + self.num_ref_frames:
                     self.video_dict[v] = v_len
@@ -196,9 +321,13 @@ class TrainDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         video_name = self.video_names[index]
-        # create masks
-        all_masks = create_random_shape_with_random_motion(
-            self.video_dict[video_name], imageHeight=self.h, imageWidth=self.w)
+        # create masks. If mask_list is provided, masks are paired by natural order
+        # instead of filename because irregular masks do not correspond to frames.
+        if not self.use_mask_list:
+            all_masks = create_random_shape_with_random_motion(
+                self.video_dict[video_name], imageHeight=self.h, imageWidth=self.w)
+        else:
+            all_masks = None
 
         # create sample index
         selected_index = self._sample_index(self.video_dict[video_name],
@@ -224,13 +353,27 @@ class TrainDataset(torch.utils.data.Dataset):
             img = Image.fromarray(img)
 
             frames.append(img)
-            masks.append(all_masks[idx])
+
+            if self.use_mask_list:
+                if self.mask_match_mode == 'clip_order':
+                    mask_path = self.mask_paths[len(masks) % len(self.mask_paths)]
+                else:
+                    # Default: frame index natural-order matching. For sequence frame idx=k,
+                    # use the k-th irregular mask modulo mask count.
+                    mask_path = self.mask_paths[idx % len(self.mask_paths)]
+                mask = Image.open(mask_path).resize(self.size, Image.NEAREST).convert('L')
+                mask = np.asarray(mask)
+                m = np.array(mask > 0).astype(np.uint8)
+                mask_img = Image.fromarray(m * 255)
+            else:
+                mask_img = all_masks[idx]
+            masks.append(mask_img)
 
             if self.use_line:
-                line_stem = os.path.splitext(frame_list[idx])[0] + '.pkl'
-                line_path = self.line_index.get((video_name, line_stem)) if self.line_index else None
+                line_stem = os.path.splitext(frame_list[idx])[0]
+                line_path = self.line_stem_index.get((video_name, line_stem)) if self.line_stem_index else None
                 if line_path is None and self.line_root is not None:
-                    line_path = os.path.join(self.line_root, video_name, line_stem)
+                    line_path = os.path.join(self.line_root, video_name, line_stem + '.pkl')
                 if line_path is not None and os.path.exists(line_path):
                     line_segments = load_lines_from_pkl(line_path)
                 else:
@@ -328,13 +471,13 @@ class TestDataset(torch.utils.data.Dataset):
         self.video_index = _build_video_file_index(self.video_list) if self.video_list else None
         self.mask_index = _build_video_file_index(self.mask_list) if self.mask_list else None
         self.flow_index = _build_video_file_index(self.flow_list) if self.flow_list else None
-        self.video_names = sorted(os.listdir(self.mask_root))
+        self.video_names = sorted(os.listdir(self.mask_root), key=_natural_key)
 
         self.video_dict = {}
         self.frame_dict = {}
 
         for v in self.video_names:
-            frame_list = sorted(os.listdir(os.path.join(self.video_root, v)))
+            frame_list = sorted(os.listdir(os.path.join(self.video_root, v)), key=_natural_key)
             v_len = len(frame_list)
             self.video_dict[v] = v_len
             self.frame_dict[v] = frame_list

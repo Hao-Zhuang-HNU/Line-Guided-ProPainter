@@ -267,7 +267,7 @@ class Trainer:
             gen_path = self.config['trainer'].get('gen_path', None)
             dis_path = self.config['trainer'].get('dis_path', None)
             opt_path = self.config['trainer'].get('opt_path', None)
-            if gen_path is not None:
+            if gen_path is not None and str(gen_path).strip() != '' and os.path.exists(gen_path):
                 if self.config['global_rank'] == 0:
                     print(f'Loading Gen-Net from {gen_path}...')
                 dataG = torch.load(gen_path, map_location=self.config['device'])
@@ -291,6 +291,8 @@ class Trainer:
                         self.scheD.load_state_dict(data_opt['scheD'])
             else:
                 if self.config['global_rank'] == 0:
+                    if gen_path is not None and str(gen_path).strip() != '':
+                        print(f'Warnning: gen_path does not exist: {gen_path}')
                     print('Warnning: There is no trained model found.'
                         'An initialized model will be used.')
 

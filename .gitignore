@@ -1,5 +1,7 @@
 ##大文件
 data_list/
+ScannetPP_testlist/
+DL3DV_testlist/
 weights/
 experiments_model/
 
