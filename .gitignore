@@ -4,6 +4,7 @@ ScannetPP_testlist/
 DL3DV_testlist/
 weights/
 experiments_model/
+eval/
 
 ##数据
 results/
