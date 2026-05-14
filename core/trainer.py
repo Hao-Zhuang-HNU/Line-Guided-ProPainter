@@ -219,6 +219,21 @@ class Trainer:
         grad = torch.sqrt(gx * gx + gy * gy + 1e-12)
         return grad.view(b, t, 1, h, w)
 
+    def _laplacian_grad(self, x):
+        """Return grayscale Laplacian response for [B,T,3,H,W].
+
+        This loss is intended for mild high-frequency supervision inside the
+        hole only. Keep its weight small, e.g. losses.laplacian_weight=0.01.
+        """
+        b, t, c, h, w = x.shape
+        x_ = x.reshape(-1, c, h, w)
+        gray = x_.mean(dim=1, keepdim=True)
+        k = gray.new_tensor([[0., 1., 0.],
+                             [1., -4., 1.],
+                             [0., 1., 0.]]).view(1, 1, 3, 3)
+        lap = F.conv2d(gray, k, padding=1)
+        return lap.view(b, t, 1, h, w)
+
     def load(self):
         """Load netG (and netD)."""
         # get the latest checkpoint
@@ -420,6 +435,10 @@ class Trainer:
 
             gen_loss = 0
             dis_loss = 0
+            perc_loss = None
+            line_weighted_loss = None
+            sobel_loss = None
+            laplacian_loss = None
             # optimize net_g
             if not self.config['model']['no_dis']:
                 for p in self.netD.parameters():
@@ -474,6 +493,19 @@ class Trainer:
                 sobel_loss = sobel_loss * sobel_weight
                 gen_loss += sobel_loss
                 self.add_summary(self.gen_writer, 'loss/sobel_loss', sobel_loss.item())
+
+            # Laplacian high-frequency loss, restricted to the hole region only.
+            # It is intentionally lightweight to reduce blur without destroying
+            # the current line-guided structural fidelity.
+            laplacian_weight = self.config['losses'].get('laplacian_weight', 0)
+            if laplacian_weight > 0:
+                lap_pred = self._laplacian_grad(pred_imgs)
+                lap_gt = self._laplacian_grad(frames)
+                denom = torch.mean(masks).clamp_min(1e-6)
+                laplacian_loss = torch.mean(torch.abs(lap_pred - lap_gt) * masks) / denom
+                laplacian_loss = laplacian_loss * laplacian_weight
+                gen_loss += laplacian_loss
+                self.add_summary(self.gen_writer, 'loss/laplacian_loss', laplacian_loss.item())
 
             # gan loss
             if not self.config['model']['no_dis']:
@@ -548,15 +580,21 @@ class Trainer:
                                           f"valid: {valid_loss.item():.3f}"))
 
                 if self.iteration % self.train_args['log_freq'] == 0:
+                    log_msg = (f"[Iter {self.iteration}] "
+                               f"hole: {hole_loss.item():.4f}; "
+                               f"valid: {valid_loss.item():.4f}")
+                    if perc_loss is not None:
+                        log_msg += f"; perc: {perc_loss.item():.4f}"
+                    if line_weighted_loss is not None:
+                        log_msg += f"; line_w: {line_weighted_loss.item():.4f}"
+                    if sobel_loss is not None:
+                        log_msg += f"; sobel: {sobel_loss.item():.4f}"
+                    if laplacian_loss is not None:
+                        log_msg += f"; lap: {laplacian_loss.item():.4f}"
+                    log_msg += f"; gen: {gen_loss.item():.4f}"
                     if not self.config['model']['no_dis']:
-                        logging.info(f"[Iter {self.iteration}] "
-                                     f"d: {dis_loss.item():.4f}; "
-                                     f"hole: {hole_loss.item():.4f}; "
-                                     f"valid: {valid_loss.item():.4f}")
-                    else:
-                        logging.info(f"[Iter {self.iteration}] "
-                                     f"hole: {hole_loss.item():.4f}; "
-                                     f"valid: {valid_loss.item():.4f}")
+                        log_msg += f"; d: {dis_loss.item():.4f}"
+                    logging.info(log_msg)
 
             # saving models
             if self.iteration % self.train_args['save_freq'] == 0:
